@@ -33,6 +33,9 @@ metrics::MetricsInstancePtr initCounters()
 	mdef.defineCounter('kcnt',"Keys Pressed", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_COUNT);
 	mdef.defineCounter('keyr',"Keys Pressed /sec", metrics::COUNTER_TYPE_32BIT  | metrics::COUNTER_FORMAT_RATE, 'kcnt');
 	mdef.defineCounter('keya',"Keys Pressed /sec /sec", metrics::COUNTER_TYPE_32BIT  | metrics::COUNTER_FORMAT_RATE, 'keyr');
+	mdef.defineCounter('ptim',"Print Time", metrics::COUNTER_TYPE_64BIT | metrics::COUNTER_FORMAT_COUNT);
+	mdef.defineCounter('ptmd',"Delta Print Time", metrics::COUNTER_TYPE_64BIT | metrics::COUNTER_FORMAT_DELTA, 'ptim');
+	mdef.defineCounter('ptmr',"Pct Print Time", metrics::COUNTER_TYPE_64BIT | metrics::COUNTER_FORMAT_TIMER, 'ptim');
 	mdef.initialize();
 	return mdef.getInstance();
 }
@@ -47,6 +50,7 @@ int main()
 		metrics::IntCounterPtr cCounter = inst->getIntCounterById('chrc');
 		metrics::IntCounterPtr vowelCounter = inst->getIntCounterById('vowl');
 		metrics::IntCounterPtr charCounter = inst->getIntCounterById('kcnt');
+		metrics::LargeCounterPtr printTimeCounter = inst->getLargeCounterById('ptim');
 
 		initscr();
 		cbreak();
@@ -77,8 +81,8 @@ int main()
 			}
 			charCounter->increment();
 
+			metrics::ScopeTimer timer(printTimeCounter);
 			mvprintw(std::min(n,rows-1),0,"0x%x (%c)", c, isprint(c) ? c : ' ');
-
 			n++;
 			if (n >= rows) {
 				scroll(stdscr);

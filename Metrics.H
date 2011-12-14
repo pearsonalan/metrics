@@ -36,6 +36,15 @@
 #include <vector>
 #include <map>
 #include <arpa/inet.h>
+#include <sys/time.h>
+
+#ifdef DARWIN
+#include <libkern/OSAtomic.h>
+#endif
+
+#ifdef LINUX
+#include <atomic>
+#endif
 
 namespace metrics {
 
@@ -70,6 +79,8 @@ namespace metrics {
 
 	// a ratio counter should be shown as value / related_value
 	const int COUNTER_FORMAT_RATIO =        0x00040000;
+
+	const int COUNTER_FORMAT_TIMER =        0x00080000;
 
 	// a mask which, when combined with the flags, will return only the FORMAT bits
 	const int COUNTER_FORMAT_MASK =         0x000f0000;
@@ -112,6 +123,12 @@ namespace metrics {
 	{
 		BOOST_ASSERT(s.length() == 4);
 		return (T)ntohl(*(int *)s.c_str());
+	}
+
+	inline long long getCurrentTimestamp() {
+		timeval tv;
+		gettimeofday(&tv,NULL);
+		return (long long)tv.tv_sec * 1000ll + (long long)tv.tv_usec / 1000ll;
 	}
 
 	class MetricsDefinition;
@@ -158,7 +175,7 @@ namespace metrics {
 	class Counter {
 	protected:
 		CounterDefinitionPtr definition;
-		void* dataptr;
+		volatile void* dataptr;
 		int datatype;
 
 	public:
@@ -172,50 +189,81 @@ namespace metrics {
 
 	typedef boost::shared_ptr<Counter> CounterPtr;
 
+	template <typename T> class AtomicOperation {
+	public:
+		static T get(volatile T* p) ;
+		static T set(volatile T* p, T val) ;
+		static T add(volatile T* p, T amt) ;
+		static T increment(volatile T* p) ;
+		static T decrement(volatile T* p) ;
+	};
+
+#ifdef DARWIN
+	// atomic get
+	template <> inline int AtomicOperation<int>::get(volatile int * p) { return OSAtomicAdd32(0,p); }
+	template <> inline long long AtomicOperation<long long>::get(volatile long long * p) { return OSAtomicAdd64(0,p); }
+
+	// atomic set
+	template <> inline int AtomicOperation<int>::set(volatile int * p, int val) {
+		int old;
+		do {
+			old = OSAtomicAdd32(0,p);
+		} while(!OSAtomicCompareAndSwap32(old,val,p));
+		return val;
+	}
+	template <> inline long long AtomicOperation<long long>::set(volatile long long * p, long long val) {
+		long long old;
+		do {
+			old = OSAtomicAdd64(0,p);
+		} while(!OSAtomicCompareAndSwap64(old,val,p));
+		return val;
+	}
+
+	// atomic add
+	template <> inline int AtomicOperation<int>::add(volatile int * p, int amt) { return OSAtomicAdd32(amt, p); }
+	template <> inline long long AtomicOperation<long long>::add(volatile long long * p, long long amt) { return OSAtomicAdd64(amt,p); }
+
+	// atomic increment
+	template <> inline int AtomicOperation<int>::increment(volatile int * p) { return OSAtomicIncrement32(p); }
+	template <> inline long long AtomicOperation<long long>::increment(volatile long long * p) { return OSAtomicIncrement64(p); }
+
+	// atomic decrement
+	template <> inline int AtomicOperation<int>::decrement(volatile int * p) { return OSAtomicDecrement32(p); }
+	template <> inline long long AtomicOperation<long long>::decrement(volatile long long * p) { return OSAtomicDecrement64(p); }
+#endif
+
+#ifdef LINUX
+	// atomic get
+	template <typename T> inline T AtomicOperation<T>::get(volatile T * p) { return *(std::atomic<T>*)p; }
+	// atomic set
+	template <typename T> inline T AtomicOperation<T>::set(volatile T * p, T val) { return *((std::atomic<T>*)p) = val; }
+	// atomic add
+	template <typename T> inline T AtomicOperation<T>::add(volatile T * p, T val) { return *((std::atomic<T>*)p) += val; }
+	// atomic increment
+	template <typename T> inline T AtomicOperation<T>::increment(volatile T * p) { return ++(*((std::atomic<T>*)p)); }
+	// atomic decrement
+	template <typename T> inline T AtomicOperation<T>::decrement(volatile T * p) { return --(*((std::atomic<T>*)p)); }
+#endif
+
+
 	template <typename T> class NumericCounter : public Counter {
 	protected:
-		T previousValue;
-		T* dptr() { return reinterpret_cast<T*>(dataptr); }
+		volatile T* dptr() { return reinterpret_cast<volatile T*>(dataptr); }
 	public:
-		NumericCounter(CounterDefinitionPtr def, void* p) : Counter(def,p), previousValue(0) {
+		NumericCounter(CounterDefinitionPtr def, void* p) : Counter(def,p) {
 			BOOST_STATIC_ASSERT(boost::is_arithmetic<T>::value);
 			BOOST_ASSERT(datatype == COUNTER_TYPE_32BIT || datatype == COUNTER_TYPE_64BIT);
 		}
 		virtual ~NumericCounter() {}
-		T getValue() { return previousValue = (dptr() ? *dptr() : 0); }
-		T getPreviousValue() { return previousValue; }
-		void setValue(T value) { if (dptr()) *dptr() = value; }
-		void incrementBy(int value) { if (dptr()) *dptr() += value; }
-		void increment() { if (dptr()) (*dptr())++; }
-		void decrement() { if (dptr()) (*dptr())--; }
+		T getValue() { return (dptr() ? AtomicOperation<T>::get(dptr()) : 0); }
+		void setValue(T value) { if (dptr()) AtomicOperation<T>::set(dptr(),value); }
+		void incrementBy(int value) { if (dptr()) AtomicOperation<T>::add(dptr(),value); }
+		void increment() { if (dptr()) AtomicOperation<T>::increment(dptr()); }
+		void decrement() { if (dptr()) AtomicOperation<T>::decrement(dptr()); }
 		virtual int asInt() { return static_cast<int>(getValue()); }
 		virtual long long asLongLong() { return static_cast<long long>(getValue()); }
 		virtual double asDouble() { return static_cast<double>(getValue()); }
 	};
-
-	// template specialization for 64 bit numeric counter
-	template <> inline long long NumericCounter<long long>::getValue() {
-		if (!dataptr) 
-			return 0;
-		long long value = *dptr();
-		// special handling if the value is monotonically increasing
-		if (definition->getFlags() & COUNTER_FLAG_MONOTONIC) {
-			// re-read if we got a bad read
-			if (((unsigned long long)value > ((unsigned long long)previousValue) + 0x100000000ll) || 
-				((unsigned long long)value < (unsigned long long)previousValue)) {
-				int r = 0;
-				long long badvalue = value;
-				// loop until we get a new read or we try 10 times
-				while (value == badvalue && r < 10) {
-					usleep(1);
-					value = *dptr();
-					r ++;
-				}
-			}
-		}
-		previousValue = value;
-		return value;
-	}
 
 	typedef boost::shared_ptr<NumericCounter<int> > IntCounterPtr;
 	typedef boost::shared_ptr<NumericCounter<long long> > LargeCounterPtr;
@@ -223,7 +271,7 @@ namespace metrics {
 
 	class TextCounter : public Counter {
 	protected:
-		char* dptr() { return reinterpret_cast<char*>(dataptr); }
+		volatile char* dptr() { return reinterpret_cast<volatile char*>(dataptr); }
 	public:
 		TextCounter(CounterDefinitionPtr def, void* p) : Counter(def,p) {}
 		std::string getValue();
@@ -325,6 +373,32 @@ namespace metrics {
 		CounterDefinitionPtr getCounterDefinition(int index);
 		CounterDefinitionPtr getCounterDefinitionById(COUNTERID ctrId);
 	};
+
+	typedef boost::shared_ptr<MetricsDefinition> MetricsDefinitionPtr;
+
+
+	//-----------------------------------------------------------------
+	// ScopeTimer
+	//
+	// Utility class to measure how much time is spent within a block
+	// of code and report that value in a counter.
+	//
+	class ScopeTimer {
+	protected:
+		LargeCounterPtr ctr;
+		long long startTime;
+	public:
+		ScopeTimer(LargeCounterPtr ctr) : ctr(ctr) {
+			// validate that the counter is the correct type of counter
+			//BOOST_ASSERT(ctr->getDefinition()->getFlags() == (COUNTER_TYPE_64BIT | COUNTER_FLAG_MONOTONIC | COUNTER_FORMAT_RATE));
+			startTime = getCurrentTimestamp();
+		}
+		~ScopeTimer() {
+			long long scopeTime = getCurrentTimestamp() - startTime;
+			ctr->incrementBy(scopeTime);
+		}
+	};
+
 }
 
 #endif

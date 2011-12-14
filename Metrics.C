@@ -123,13 +123,13 @@ namespace metrics {
 	std::string TextCounter::getValue() 
 	{
 		char buf[9] = {0};
-		strncpy(buf, dptr(), 8);
+		strncpy(buf, const_cast<const char *>(dptr()), 8);
 		return std::string(buf);
 	}
 
 	void TextCounter::setValue(const std::string& value) 
 	{
-		strncpy(dptr(),value.c_str(),8);
+		strncpy(const_cast<char *>(dptr()),value.c_str(),8);
 	}
 
 
@@ -506,9 +506,7 @@ namespace metrics {
 
 	void Sample::setSampleTime()
 	{
-		timeval tv;
-		gettimeofday(&tv,NULL);
-		time = (long long)tv.tv_sec * 1000ll + (long long)tv.tv_usec / 1000ll;
+		time = getCurrentTimestamp();
 	}
 
 	void Sample::format(MetricsDefinition& mdef, Sample& prev) 
@@ -550,6 +548,9 @@ namespace metrics {
 				break;
 			case COUNTER_FORMAT_RATE:
 				val = Variant((boost::get<double>(val) - boost::get<double>(prevval)) * 1000.0 / (double)(time - prev.time));
+				break;
+			case COUNTER_FORMAT_TIMER:
+				val = Variant((boost::get<double>(val) - boost::get<double>(prevval)) * 100.0 / (double)(time - prev.time));
 				break;
 			case COUNTER_FORMAT_RATIO:
 				if (boost::get<double>(this->operator[](relid)) != 0.0)

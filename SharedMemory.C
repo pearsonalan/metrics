@@ -89,7 +89,7 @@ namespace shmem {
                 throw Exception(std::string("Cannot create directory for shared memory file at ") + kSharedMemoryDirectory);
             }
         } else {
-            if (s.st_mode & S_IFDIR != S_IFDIR) {
+            if ((s.st_mode & S_IFDIR) != S_IFDIR) {
                 throw Exception(std::string("Path for shared memory ") + kSharedMemoryDirectory + " is not a directory");
             } 
         }
