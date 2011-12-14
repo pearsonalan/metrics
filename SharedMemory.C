@@ -61,17 +61,17 @@ namespace shmem {
         struct shmid_ds ds;
         
         if (mem) {
-            std::cout << "Detaching shared memory " << std::hex << shmkey << std::endl;;
+            //std::cout << "Detaching shared memory " << std::hex << shmkey << std::endl;;
             shmdt(mem);
             mem = NULL;
         }
         
         if (shmctl(shmid, IPC_STAT, &ds) == 0) {
-            std::cout << "Shared memory " << std::hex << shmkey << " has " << std::dec << ds.shm_nattch << " attaches" << std::endl;
+            //std::cout << "Shared memory " << std::hex << shmkey << " has " << std::dec << ds.shm_nattch << " attaches" << std::endl;
         }
         
         if (shmid != -1 && ds.shm_nattch == 0) {
-            std::cout << "Removing shared memory " << std::hex << shmkey << " (shmid " << std::dec << shmid << ")" << std::endl;
+            //std::cout << "Removing shared memory " << std::hex << shmkey << " (shmid " << std::dec << shmid << ")" << std::endl;
             shmctl(shmid, IPC_RMID, NULL);
             shmid = -1;
             unlink(filename.c_str());
@@ -120,7 +120,7 @@ namespace shmem {
             break;
         }
 
-        std::cout << "Opening shmkey " << std::hex << shmkey << " for " << name << " (" << filename << ")" << std::endl;
+        //std::cout << "Opening shmkey " << std::hex << shmkey << " for " << name << " (" << filename << ")" << std::endl;
 
         shmid = shmget(shmkey, size, mode) ;
         if (shmid == -1) {
@@ -159,7 +159,7 @@ namespace shmem {
             throw Exception(oss.str());
         }
 
-        std::cout << "Successfylly openend shm " << std::hex << shmkey << " for " << name << std::endl;
+        //std::cout << "Successfylly openend shm " << std::hex << shmkey << " for " << name << std::endl;
     }
 
 }

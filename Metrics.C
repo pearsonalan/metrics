@@ -30,6 +30,8 @@
 #include <boost/assert.hpp>
 #include <boost/foreach.hpp>
 #include <boost/lexical_cast.hpp>
+#include <sys/time.h>
+
 #include "Metrics.H"
 
 namespace metrics {
@@ -38,11 +40,13 @@ namespace metrics {
 	// CounterDefinition
 	//
 
-	CounterDefinition::CounterDefinition(COUNTERID ctrId, int flags, int offset, int index) :
+	CounterDefinition::CounterDefinition(COUNTERID ctrId, std::string description_in, int flags, int offset, int index, COUNTERID relatedCtrId) :
 		ctrId(ctrId),
+		description(description_in),
 		flags(flags),
 		index(index),
-		offset(offset)
+		offset(offset),
+		relatedCounterId(relatedCtrId)
 	{
 	}
 
@@ -50,11 +54,17 @@ namespace metrics {
 		ctrId(0),
 		flags(0),
 		index(index_in),
-		offset(offset_in)
+		offset(offset_in),
+		relatedCounterId(COUNTERID_NULL)
 	{
 		int* c = (int*)p;
 		ctrId = c[0];
 		flags = c[1];
+		relatedCounterId = c[2];
+
+		char buf[33] = {0};
+		strncpy(buf, p + 3*sizeof(int), 32);
+		description = std::string(buf);
 	}
 
 	std::string CounterDefinition::getName() const 
@@ -70,6 +80,8 @@ namespace metrics {
 		int * c = (int*)p;
 		c[0] = ctrId;
 		c[1] = flags;
+		c[2] = relatedCounterId;
+		strncpy((char *)p + 3*sizeof(int),description.c_str(),32);
 	}
 
 	int CounterDefinition::getCounterSize() const
@@ -192,25 +204,30 @@ namespace metrics {
 		return counters[cdef->getIndex()];
 	}
 
-	bool MetricsInstance::sample(std::map<COUNTERID, Variant>& data)
+	bool MetricsInstance::sample(Sample& sample)
 	{
+		sample.setSampleTime();
 		if ((*((int*)instanceData) & INSTANCE_FLAG_LIVE) == 0)
 			return false;
 		BOOST_FOREACH(CounterPtr ctr, counters) {
 			CounterDefinitionPtr cdef = ctr->getDefinition();
+
+			// if the counter has a related counter ID, we don't need to get the value for this 
+			// counter since it gets its data from a different one
+			if (cdef->getRelatedCounterId() != COUNTERID_NULL)
+				continue;
+
 			Variant v;
 			switch (cdef->getDataType()) {
 			case COUNTER_TYPE_32BIT:
-				v = Variant(boost::dynamic_pointer_cast<NumericCounter<int> >(ctr)->getValue());
-				break;
 			case COUNTER_TYPE_64BIT:
-				v = Variant(boost::dynamic_pointer_cast<NumericCounter<long long> >(ctr)->getValue());
+				v = Variant(ctr->asDouble());
 				break;
 			case COUNTER_TYPE_TEXT:
 				v = Variant(boost::dynamic_pointer_cast<TextCounter>(ctr)->getValue());
 				break;
 			}
-			data.insert(std::make_pair(cdef->getId(),v));
+			sample.insert(std::make_pair(cdef->getId(),v));
 		}
 		return true;
 	}
@@ -279,11 +296,11 @@ namespace metrics {
 		// compute the total size of the shared memory needed
 		int totalSize = definitionSize + maxInstances * instanceSize;
 
-		std::cout << "total size for metrics = " << totalSize << std::endl;
+		//std::cout << "total size for metrics = " << totalSize << std::endl;
 
 		shmem = boost::shared_ptr<shmem::SharedMemory>(new shmem::SharedMemory(name,totalSize,counterDefs.size() == 0 ? shmem::OpenExisting : shmem::OpenOrCreate));
 		if (shmem->wasCreated()) {
-			std::cout << "Created new shared mem" << std::endl;
+			//std::cout << "Created new shared mem" << std::endl;
 
 			// if we created the shared memory, as opposed to opening an existing one, we need to init the memory
 			char * p = (char*) shmem->getSharedMemory();
@@ -306,7 +323,7 @@ namespace metrics {
 			instanceData = p;
 
 		} else {
-			std::cout << "Opened existing shared mem" << std::endl;
+			// std::cout << "Opened existing shared mem" << std::endl;
 
 			// if we opened an existing shared memory check the values and init the counters 
 			char* p = (char*) shmem->getSharedMemory();
@@ -349,7 +366,7 @@ namespace metrics {
 				bzero(instanceData, instanceSize * maxInstances);
 
 			} else {
-				std::cout << "Reading counter defintions from shared mem" << std::endl;
+				// std::cout << "Reading counter defintions from shared mem" << std::endl;
 
 				// initialize the counter set from the shared memory
 				count = *((int*)p + 1);
@@ -382,14 +399,14 @@ namespace metrics {
 		}
 	}
 
-	CounterDefinitionPtr MetricsDefinition::defineCounter(std::string ctrName, int flags)
+	CounterDefinitionPtr MetricsDefinition::defineCounter(const std::string& ctrName, const std::string& description, int flags, COUNTERID relatedCounterId)
 	{
-		return defineCounter(idFromString<COUNTERID>(ctrName),flags);
+		return defineCounter(idFromString<COUNTERID>(ctrName),description,flags,relatedCounterId);
 	}
 
-	CounterDefinitionPtr MetricsDefinition::defineCounter(COUNTERID ctrId, int flags)
+	CounterDefinitionPtr MetricsDefinition::defineCounter(COUNTERID ctrId, const std::string& description, int flags, COUNTERID relatedCounterId)
 	{
-		CounterDefinitionPtr ctrDef(new CounterDefinition(ctrId,flags,instanceSize,counterDefs.size()));
+		CounterDefinitionPtr ctrDef(new CounterDefinition(ctrId,description,flags,instanceSize,counterDefs.size(),relatedCounterId));
 
 		// each counter adds a counter ID and flags to the definition chunk
 		definitionSize += COUNTER_DEFINITION_SIZE;
@@ -420,18 +437,18 @@ namespace metrics {
 	{
 		BOOST_ASSERT(maxInstances == 1 && "Invalid to invoke this method on a multi-instance definition");
 		BOOST_ASSERT(instanceData != NULL && "Invalid instance data pointer");
-		
+
 		int * p = (int*)instanceData;
-		
+
 		if (p[0] & INSTANCE_FLAG_LIVE) {
 			// instance already live.
 			BOOST_ASSERT(p[1] == metId && "Unexpected instance ID");
 		} else {
 			// instance is not currently live.  we are allocating it for the first time
-			
+
 			// clear the memory
 			bzero(p,instanceSize);
-			
+
 			// set the flags and instance ID:
 			p[0] = INSTANCE_FLAG_LIVE;
 			p[1] = metId;			// for single instances, the instance ID is the same as the metrics ID
@@ -453,11 +470,11 @@ namespace metrics {
 			if (!(p[0] & INSTANCE_FLAG_LIVE)) {
 				// clear the memory
 				bzero(p,instanceSize);
-				
+
 				// set the flags and instance ID:
 				p[0] = INSTANCE_FLAG_LIVE;
-				p[1] = instId;	
-			
+				p[1] = instId;
+
 				MetricsInstancePtr inst(new MetricsInstance(this,p));
 				inst->setCleanupOnDealloc(true);
 				return inst;
@@ -476,6 +493,79 @@ namespace metrics {
 			throw Exception("Invalid index");
 		int * p = (int*)((char*)instanceData + (index * instanceSize));
 		return MetricsInstancePtr( new MetricsInstance(this,p));
+	}
+
+
+	//------------------------------------------------------------------------------
+	// Sample
+	//
+
+	Sample::Sample() 
+	{
+	}
+
+	void Sample::setSampleTime()
+	{
+		timeval tv;
+		gettimeofday(&tv,NULL);
+		time = (long long)tv.tv_sec * 1000ll + (long long)tv.tv_usec / 1000ll;
+	}
+
+	void Sample::format(MetricsDefinition& mdef, Sample& prev) 
+	{
+		int index = 0;
+		BOOST_FOREACH(CounterDefinitionPtr ctrdef, mdef.getCounterDefinitions()) {
+			// don't do any formatting for TEXT
+			if (ctrdef->getDataType() == COUNTER_TYPE_TEXT)
+				continue;
+
+			if (prev.size() == 0)
+				continue;
+
+			COUNTERID id = ctrdef->getId();
+			COUNTERID relid = ctrdef->getRelatedCounterId();
+			Variant val,prevval;
+
+			if ((ctrdef->getFlags() & COUNTER_FLAG_USEPRIORVALUE) && index > 0) {
+				CounterDefinitionPtr priordef = mdef.getCounterDefinition(index-1);
+				id = priordef->getId();
+			}
+
+			if (ctrdef->getFormat() == COUNTER_FORMAT_RATIO) {
+				val = this->operator[](id);
+			} else {
+				val = (relid == COUNTERID_NULL ? this->operator[](id) : this->operator[](relid));
+				prevval = (relid == COUNTERID_NULL ? prev[id] : prev[relid]);
+				if (prevval.which() != 2) prevval = Variant((double)0.0);
+			}
+
+			if (val.which() != 2) val = Variant((double)0.0);
+
+			switch (ctrdef->getFormat()) {
+			case COUNTER_FORMAT_COUNT:
+				// nothing to do
+				break;
+			case COUNTER_FORMAT_DELTA:
+				val = Variant(boost::get<double>(val) - boost::get<double>(prevval));
+				break;
+			case COUNTER_FORMAT_RATE:
+				val = Variant((boost::get<double>(val) - boost::get<double>(prevval)) * 1000.0 / (double)(time - prev.time));
+				break;
+			case COUNTER_FORMAT_RATIO:
+				if (boost::get<double>(this->operator[](relid)) != 0.0)
+					val = Variant(boost::get<double>(val) / boost::get<double>(this->operator[](relid)));
+				else
+					val = Variant((double)0.0);
+				break;
+			}
+
+			if (ctrdef->getFlags() & COUNTER_FLAG_PCT) {
+				val = Variant(boost::get<double>(val) * 100.0);
+			}
+
+			this->operator[](ctrdef->getId()) = val;
+			index++;
+		}
 	}
 }
 

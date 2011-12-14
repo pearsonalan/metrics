@@ -23,11 +23,16 @@ metrics::MetricsDefinition mdef('keys');
 
 metrics::MetricsInstancePtr initCounters()
 {
-	mdef.defineCounter('chra',metrics::COUNTER_TYPE_32BIT);
-	mdef.defineCounter('chrb',metrics::COUNTER_TYPE_32BIT);
-	mdef.defineCounter('chrc',metrics::COUNTER_TYPE_32BIT);
-	mdef.defineCounter('vowl',metrics::COUNTER_TYPE_32BIT);
-	mdef.defineCounter('ccnt',metrics::COUNTER_TYPE_32BIT);
+	mdef.defineCounter('chra',"Number of A Keys", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_COUNT);
+	mdef.defineCounter('chrb',"Number of B Keys", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_COUNT);
+	mdef.defineCounter('chrc',"Number of C Keys", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_COUNT);
+	mdef.defineCounter('vowl',"Vowel Keys Pressed", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_COUNT);
+	mdef.defineCounter('pvwl',"Pct. Vowel Keys", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_RATIO | metrics::COUNTER_FLAG_USEPRIORVALUE | metrics::COUNTER_FLAG_PCT, 'kcnt');
+	mdef.defineCounter('dvwl',"Delta Vowel Keys Pressed", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_DELTA, 'vowl');
+	mdef.defineCounter('vwlr',"Vowel Keys Pressed /sec", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_RATE, 'vowl');
+	mdef.defineCounter('kcnt',"Keys Pressed", metrics::COUNTER_TYPE_32BIT | metrics::COUNTER_FORMAT_COUNT);
+	mdef.defineCounter('keyr',"Keys Pressed /sec", metrics::COUNTER_TYPE_32BIT  | metrics::COUNTER_FORMAT_RATE, 'kcnt');
+	mdef.defineCounter('keya',"Keys Pressed /sec /sec", metrics::COUNTER_TYPE_32BIT  | metrics::COUNTER_FORMAT_RATE, 'keyr');
 	mdef.initialize();
 	return mdef.getInstance();
 }
@@ -41,7 +46,7 @@ int main()
 		metrics::IntCounterPtr bCounter = inst->getIntCounterById('chrb');
 		metrics::IntCounterPtr cCounter = inst->getIntCounterById('chrc');
 		metrics::IntCounterPtr vowelCounter = inst->getIntCounterById('vowl');
-		metrics::IntCounterPtr charCounter = inst->getIntCounterById('ccnt');
+		metrics::IntCounterPtr charCounter = inst->getIntCounterById('kcnt');
 
 		initscr();
 		cbreak();
@@ -67,13 +72,13 @@ int main()
 			if (c == 'c' || c == 'C') {
 				cCounter->increment();
 			}
-
 			if (c == 'a' || c == 'A' || c == 'e' || c == 'E' || c == 'i' || c == 'I' || c == 'o' || c == 'O' || c == 'u' || c == 'U') {
 				vowelCounter->increment();
 			}
-
 			charCounter->increment();
-			mvprintw(std::min(n,rows-1),0,"%x", c);
+
+			mvprintw(std::min(n,rows-1),0,"0x%x (%c)", c, isprint(c) ? c : ' ');
+
 			n++;
 			if (n >= rows) {
 				scroll(stdscr);

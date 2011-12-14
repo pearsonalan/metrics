@@ -35,12 +35,16 @@
 #include <boost/variant.hpp>
 #include <vector>
 #include <map>
+#include <arpa/inet.h>
 
 namespace metrics {
 
 	typedef int COUNTERID;
 	typedef int METRICSID;
 	typedef int INSTANCEID;
+
+	const int COUNTERID_NULL = 0;
+
 
 	// a 32-bit counter
 	const int COUNTER_TYPE_32BIT =          0x00000001;
@@ -51,18 +55,41 @@ namespace metrics {
 	// an 8-byte indentifier, displayed as 16 hex characters
 	const int COUNTER_TYPE_IDENT =          0x00000008;
 
-	// a mask which, when combined with the flags, will return onlythe TYPE bits
+	// a mask which, when combined with the flags, will return only the TYPE bits
 	const int COUNTER_TYPE_MASK =           0x0000000f;
 
+
+	// a count counter should be shown as absolute value
+	const int COUNTER_FORMAT_COUNT =        0x00000000;
+
+	// a delta counter should be shown as the change in value between 2 samples: i.e., delta(value)
+	const int COUNTER_FORMAT_DELTA =        0x00010000;
+
 	// a rate counter should be divided and shown as delta(value) / delta(time)
-	const int COUNTER_FLAG_RATE =           0x00010000;
+	const int COUNTER_FORMAT_RATE =         0x00020000;
+
+	// a ratio counter should be shown as value / related_value
+	const int COUNTER_FORMAT_RATIO =        0x00040000;
+
+	// a mask which, when combined with the flags, will return only the FORMAT bits
+	const int COUNTER_FORMAT_MASK =         0x000f0000;
+
 
 	// a monotonic counter should be always increasing. a special trick is performed with 64-bit monotonic counters
 	// to try and read them correctly without resorting to locking
-	const int COUNTER_FLAG_MONOTONIC =      0x00020000;
+	const int COUNTER_FLAG_MONOTONIC =      0x00100000;
+
+	// the value for this counter is taken from the previous counter.  this is useful
+	// primarily for RATIO counters where you want to have the absolute value and also
+	// a ratio
+	const int COUNTER_FLAG_USEPRIORVALUE =  0x00200000;
+
+	// multiply the value by 100
+	const int COUNTER_FLAG_PCT =  			0x00400000;
 
 	// flag indicating that an instance slot has been allocated
 	const int INSTANCE_FLAG_LIVE =          0x00000001;
+
 
 	// the base size of the metrics defintion is 3 ints:
 	//   the metrics ID
@@ -78,7 +105,8 @@ namespace metrics {
 	// In the shared memory, a counter definition takes 2 ints:
 	//      the id of the counter
 	//      the counter flags
-	const int COUNTER_DEFINITION_SIZE =         (2*sizeof(int));
+	//		counter description (32 chars)
+	const int COUNTER_DEFINITION_SIZE =         (2*sizeof(int)) + sizeof(COUNTERID) + 32;
 
 	template <typename T> T idFromString(const std::string& s)
 	{
@@ -100,18 +128,23 @@ namespace metrics {
 	class CounterDefinition {
 	private:
 		COUNTERID   ctrId;
+		std::string description;
 		int         flags;
 		int         index;
 		int         offset;
+		COUNTERID   relatedCounterId;
 
 	public:
-		CounterDefinition(COUNTERID ctrId_in, int flags_in, int offset_in, int index_in);
+		CounterDefinition(COUNTERID ctrId_in, std::string description_in, int flags_in, int offset_in, int index_in, COUNTERID relatedCounterId_in = COUNTERID_NULL);
 		CounterDefinition(char* p, int offset_in, int index_in);
 
 		COUNTERID getId() const { return ctrId; }
+		COUNTERID getRelatedCounterId() const { return relatedCounterId; }
 		int getFlags() const { return flags; }
 		int getIndex() const { return index; }
 		int getDataType() const { return flags & COUNTER_TYPE_MASK; }
+		int getFormat() const { return flags & COUNTER_FORMAT_MASK; }
+		const std::string& getDescription() const { return description; }
 		std::string getName() const;
 		int getCounterSize() const;
 
@@ -120,7 +153,7 @@ namespace metrics {
 
 	typedef boost::shared_ptr<CounterDefinition> CounterDefinitionPtr;
 
-	typedef boost::variant<int, long long, std::string> Variant;
+	typedef boost::variant<int, long long, double, std::string> Variant;
 
 	class Counter {
 	protected:
@@ -131,6 +164,9 @@ namespace metrics {
 	public:
 		Counter(CounterDefinitionPtr def, void* p);
 		virtual ~Counter() = 0;
+		virtual int asInt() { return 0; }
+		virtual long long asLongLong() { return 0; }
+		virtual double asDouble() { return 0.0; }
 		CounterDefinitionPtr getDefinition() const { return definition; }
 	};
 
@@ -152,6 +188,9 @@ namespace metrics {
 		void incrementBy(int value) { if (dptr()) *dptr() += value; }
 		void increment() { if (dptr()) (*dptr())++; }
 		void decrement() { if (dptr()) (*dptr())--; }
+		virtual int asInt() { return static_cast<int>(getValue()); }
+		virtual long long asLongLong() { return static_cast<long long>(getValue()); }
+		virtual double asDouble() { return static_cast<double>(getValue()); }
 	};
 
 	// template specialization for 64 bit numeric counter
@@ -194,6 +233,17 @@ namespace metrics {
 	typedef boost::shared_ptr<TextCounter> TextCounterPtr;
 
 
+	class Sample : public std::map<COUNTERID, Variant> {
+	protected:
+		long long time;
+	public:
+		Sample();
+		void setSampleTime();
+		long long getTime() const { return time; }
+		void format(MetricsDefinition&, Sample& previousSample);
+	};
+
+
 	class MetricsInstance {
 	private:
 		MetricsDefinition * definition;
@@ -221,10 +271,11 @@ namespace metrics {
 
 		// if instance is alive, reads all of the counters and puts their values into 
 		// the map. if instance is not alive, the map is not updated, and false is returned
-		bool sample(std::map<COUNTERID, Variant>& data);
+		bool sample(Sample& sample);
 	};
 
 	typedef boost::shared_ptr<MetricsInstance> MetricsInstancePtr;
+
 
 	class MetricsDefinition {
 	private:
@@ -266,8 +317,8 @@ namespace metrics {
 		MetricsInstancePtr getInstanceByIndex(int index);
 
 		// add a counter definition to the metrics definition
-		CounterDefinitionPtr defineCounter(std::string ctrName, int flags);
-		CounterDefinitionPtr defineCounter(COUNTERID ctrId, int flags);
+		CounterDefinitionPtr defineCounter(const std::string& ctrName, const std::string& description, int flags, COUNTERID relatedCounterId = COUNTERID_NULL);
+		CounterDefinitionPtr defineCounter(COUNTERID ctrId, const std::string& description, int flags, COUNTERID relatedCounterId = COUNTERID_NULL);
 
 		const std::vector<CounterDefinitionPtr>& getCounterDefinitions() const { return counterDefs; }
 

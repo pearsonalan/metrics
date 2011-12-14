@@ -35,22 +35,31 @@ int main(int argc, char** argv) {
 		sleep(1);
 	} while(1);
 
-	BOOST_FOREACH(metrics::CounterDefinitionPtr ctrdef, mdef.getCounterDefinitions()) {
-		std::cout << ctrdef->getName() << std::endl;
-	}
+	clear();
+	refresh();
 
+	metrics::Sample prevSample;
 	for (;;) {
 		sleep(1);
 		metrics::MetricsInstancePtr inst = mdef.getInstance();
 		if (inst) {
-			std::map<metrics::COUNTERID,metrics::Variant> sample;
+			metrics::Sample sample;
 			if (inst->sample(sample)) {
+
+				sample.format(mdef,prevSample);
+
 				clear();
-				int n=0;
+				int n=2;
+				mvprintw(0,0,"SAMPLE @ %lld\n", sample.getTime());
 				BOOST_FOREACH(metrics::CounterDefinitionPtr ctrdef, mdef.getCounterDefinitions()) {
-					mvprintw(n++,0,"%s = %s", ctrdef->getName().c_str(),boost::lexical_cast<std::string>(sample[ctrdef->getId()]).c_str());
+					mvprintw(n,0,"[%s.%s]", ctrname.c_str(), ctrdef->getName().c_str());
+					mvprintw(n,14,"%s", ctrdef->getDescription().c_str());
+					mvprintw(n,50,"%s", boost::lexical_cast<std::string>(sample[ctrdef->getId()]).c_str());
+					n++;
 				}
 				refresh();
+
+				prevSample = sample;
 			}
 		}
 	}
