@@ -80,6 +80,9 @@ namespace metrics {
 	// a ratio counter should be shown as value / related_value
 	const int COUNTER_FORMAT_RATIO =        0x00040000;
 
+	// a counter (typically implemented with metrics::ScopeTimer) that reports the 
+	// amount of time spent in an operation.  the counter data is a monotonically increasing
+	// count of milliseconds.  the data is printed as (delta(value) / delta(time)) * 100
 	const int COUNTER_FORMAT_TIMER =        0x00080000;
 
 	// a mask which, when combined with the flags, will return only the FORMAT bits
@@ -257,12 +260,22 @@ namespace metrics {
 		virtual ~NumericCounter() {}
 		T getValue() { return (dptr() ? AtomicOperation<T>::get(dptr()) : 0); }
 		void setValue(T value) { if (dptr()) AtomicOperation<T>::set(dptr(),value); }
-		void incrementBy(int value) { if (dptr()) AtomicOperation<T>::add(dptr(),value); }
-		void increment() { if (dptr()) AtomicOperation<T>::increment(dptr()); }
-		void decrement() { if (dptr()) AtomicOperation<T>::decrement(dptr()); }
+		T incrementBy(T value) { if (dptr()) return AtomicOperation<T>::add(dptr(),value); return 0; }
+		T increment() { if (dptr()) return AtomicOperation<T>::increment(dptr()); return 0; }
+		T decrement() { if (dptr()) return AtomicOperation<T>::decrement(dptr()); return 0; }
 		virtual int asInt() { return static_cast<int>(getValue()); }
 		virtual long long asLongLong() { return static_cast<long long>(getValue()); }
 		virtual double asDouble() { return static_cast<double>(getValue()); }
+
+		// operator ++ and -- don't follow correct postfix and prefix semantics.  both do the same thing
+		T operator++() { return increment(); }
+		T operator++(int) { return increment(); }
+		T operator--() { return decrement(); }
+		T operator--(int) { return decrement(); }
+		T operator+=(T t) { return incrementBy(t); }
+		T operator-=(T t) { return incrementBy(-t); }
+		void operator = (T t) { setValue(t); }
+		operator T () { return getValue(); }
 	};
 
 	typedef boost::shared_ptr<NumericCounter<int> > IntCounterPtr;
